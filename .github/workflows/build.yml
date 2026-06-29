@@ -1,5 +1,5 @@
-name: Build and Release App
-
+# 手动触发多平台全量构建并自动发布 Release
+name: Manual Release Build
 
 on:
   workflow_dispatch:
@@ -7,70 +7,109 @@ on:
       version:
         description: '请输入发布的版本号 (例如: v1.0.0)'
         required: true
-        default: 'v1.0.1'
+        default: 'v1.0.0'
+
+env:
+  NODE_VERSION: 22.x
 
 jobs:
-  release:
-    name: Build on ${{ matrix.os }}
+  build_and_release:
+    name: Build & Release on ${{ matrix.name }} (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
-    
     strategy:
+      fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
-
+        include:
+          - os: windows-latest
+            name: windows
+            arch: x64
+            build_cmd: pnpm build:win --x64
+          - os: macos-latest
+            name: macOS
+            arch: arm64
+            build_cmd: pnpm build:mac --arm64
+          - os: macos-latest
+            name: macOS
+            arch: x64
+            build_cmd: pnpm build:mac --x64
+          - os: ubuntu-latest
+            name: linux
+            arch: x64
+            build_cmd: pnpm build:linux --x64
+            
     steps:
       - name: Check out git repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Install Node.js
-        uses: actions/setup-node@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: ${{ env.NODE_VERSION }}
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
+      # 完美继承：配置 Rust 工具链，用于本地编译你的音频和窗口引擎等原生组件
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # 完美继承：Rust 编译缓存，大幅缩短编译耗时
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
         with:
-          version: 9
+          workspaces: "native/audio-engine -> target\nnative/media-ctrl -> target"
 
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.pnpm-store
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
+      # 完美继承：Linux 独有的打包/音频系统依赖环境安装
+      - name: 安装系统依赖 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libdbus-1-dev pkg-config clang \
+            rpm libarchive-tools
 
+      # 清理旧构建产物
+      - name: Clean workspace on Windows
+        if: runner.os == 'Windows'
+        run: |
+          if (Test-Path dist) { Remove-Item -Recurse -Force dist }
+          if (Test-Path out) { Remove-Item -Recurse -Force out }
+
+      - name: Clean workspace on macOS & Linux
+        if: runner.os != 'Windows'
+        run: rm -rf dist out
+
+      # CI 环境中移除国内定制镜像配置
+      - name: 移除 .npmrc
+        shell: bash
+        run: rm -f .npmrc
+
+      # 安装项目依赖
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install
 
-      - name: Build Web & Native Assets
-        run: pnpm build
+      # 执行对应的平台构建指令
+      - name: Build Application
+        run: ${{ matrix.build_cmd }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
 
-      # 🔽 核心改变：把原本交给 electron-builder 的自动发布关掉，改为我们用官方的 Action 统一精准控场
-      - name: Build Electron App (Windows)
-        if: matrix.os == 'windows-latest'
-        run: npx electron-builder --win
-
-      - name: Build Electron App (macOS)
-        if: matrix.os == 'macos-latest'
-        run: npx electron-builder --mac
-
-      - name: Build Electron App (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: npx electron-builder --linux
-
-      # 🔽 三台机器各自打完包后，自动把成品塞进你输入的那个版本号的 Release 里
-      - name: Release to GitHub
+      # 🔽 新增核心能力：四台打包机各自完工后，精准将自己格式的包塞进指定的同一个 GitHub Release 中
+      - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.version }}
           name: Release ${{ github.event.inputs.version }}
-          draft: true # 👈 默认创建为草稿，方便你确认无误后再手动公开
+          draft: true # 👈 先创建为“草稿”状态，方便你进网页预览确认无误后一键“发布”
+          prerelease: false
           files: |
             dist/*.exe
             dist/*.dmg
             dist/*.zip
             dist/*.AppImage
             dist/*.deb
+            dist/*.rpm
+            dist/*.tar.gz
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 这里用内置的 TOKEN 即可
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
