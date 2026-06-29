@@ -2,9 +2,9 @@ name: Build and Release App
 
 on:
   push:
-    branches:
-      - main # 如果你的默认分支是 master，请改成 master
-  workflow_dispatch: # 允许你在 GitHub 页面上手动点击按钮触发
+    tags:
+      - 'v*' 
+  workflow_dispatch: 
 
 jobs:
   release:
@@ -13,7 +13,6 @@ jobs:
     
     strategy:
       matrix:
-        # 同时启动三台独立的打包机：Mac、Windows、Linux
         os: [macos-latest, windows-latest, ubuntu-latest]
 
     steps:
@@ -30,7 +29,6 @@ jobs:
         with:
           version: 9
 
-      # 缓存 pnpm 依赖，加快后续打包速度
       - name: Setup pnpm cache
         uses: actions/cache@v4
         with:
@@ -42,38 +40,24 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      # GitHub 的打包机已经预装了 Rust，这里会自动编译你的 audio-engine 等原生模块
       - name: Build Web & Native Assets
         run: pnpm build
 
-      # 分流打包
-      - name: Build Electron App (Windows)
+      # 🔽 核心改变：加上 --publish always 参数，并确保 GH_TOKEN 注入
+      - name: Build & Publish Electron App (Windows)
         if: matrix.os == 'windows-latest'
-        run: npx electron-builder --win
+        run: npx electron-builder --win --publish always
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Electron App (macOS)
+      - name: Build & Publish Electron App (macOS)
         if: matrix.os == 'macos-latest'
-        run: npx electron-builder --mac
+        run: npx electron-builder --mac --publish always
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Electron App (Linux)
+      - name: Build & Publish Electron App (Linux)
         if: matrix.os == 'ubuntu-latest'
-        run: npx electron-builder --linux
+        run: npx electron-builder --linux --publish always
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-
-      # 打包完成后，把 dist 文件夹下的成品安装包上传到 GitHub
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: splayer-next-${{ runner.os }}
-          path: |
-            dist/*.exe
-            dist/*.dmg
-            dist/*.zip
-            dist/*.AppImage
-            dist/*.deb
-          if-no-files-found: warn
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
