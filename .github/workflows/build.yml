@@ -1,10 +1,13 @@
 name: Build and Release App
 
+
 on:
-  push:
-    tags:
-      - 'v*' 
-  workflow_dispatch: 
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '请输入发布的版本号 (例如: v1.0.0)'
+        required: true
+        default: 'v1.0.1'
 
 jobs:
   release:
@@ -43,21 +46,31 @@ jobs:
       - name: Build Web & Native Assets
         run: pnpm build
 
-      # 🔽 核心改变：加上 --publish always 参数，并确保 GH_TOKEN 注入
-      - name: Build & Publish Electron App (Windows)
+      # 🔽 核心改变：把原本交给 electron-builder 的自动发布关掉，改为我们用官方的 Action 统一精准控场
+      - name: Build Electron App (Windows)
         if: matrix.os == 'windows-latest'
-        run: npx electron-builder --win --publish always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win
 
-      - name: Build & Publish Electron App (macOS)
+      - name: Build Electron App (macOS)
         if: matrix.os == 'macos-latest'
-        run: npx electron-builder --mac --publish always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --mac
 
-      - name: Build & Publish Electron App (Linux)
+      - name: Build Electron App (Linux)
         if: matrix.os == 'ubuntu-latest'
-        run: npx electron-builder --linux --publish always
+        run: npx electron-builder --linux
+
+      # 🔽 三台机器各自打完包后，自动把成品塞进你输入的那个版本号的 Release 里
+      - name: Release to GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          name: Release ${{ github.event.inputs.version }}
+          draft: true # 👈 默认创建为草稿，方便你确认无误后再手动公开
+          files: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            dist/*.AppImage
+            dist/*.deb
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 这里用内置的 TOKEN 即可
